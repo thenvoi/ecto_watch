@@ -315,13 +315,18 @@ defmodule EctoWatch.WatcherServer do
             (extra_columns || [])
       end
 
-    # |> MapSet.new()
-
     [
       unique_label
       | returned_values
         |> Enum.filter(fn {k, _} -> k in identifier_columns end)
-        |> Enum.map(fn {k, v} -> "#{unique_label}|#{k}|#{v}" end)
+        |> Enum.map(fn
+          {k, v} when is_binary(v) ->
+            "#{unique_label}|#{k}|#{v}"
+
+          {k, v} ->
+            # TODO: handle JSON fields
+            "#{unique_label}|#{k}"
+        end)
     ]
   end
 
