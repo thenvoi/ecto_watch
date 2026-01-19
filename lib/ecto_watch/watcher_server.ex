@@ -141,9 +141,10 @@ defmodule EctoWatch.WatcherServer do
        pub_sub_mod: pub_sub_mod,
        unique_label: unique_label,
        identifier_columns:
-         MapSet.put(
-           MapSet.new(options.schema_definition.association_columns),
-           options.schema_definition.primary_key
+         MapSet.new(
+           [options.schema_definition.primary_key] ++
+             options.schema_definition.association_columns ++
+             (options.extra_columns || [])
          ),
        options: options
      }}
@@ -243,7 +244,8 @@ defmodule EctoWatch.WatcherServer do
             type,
             state.unique_label,
             returned_values,
-            state.options.schema_definition
+            state.options.schema_definition,
+            state.options.extra_columns
           ) do
       debug_log(
         state.options,
@@ -298,7 +300,7 @@ defmodule EctoWatch.WatcherServer do
     end
   end
 
-  def topics(update_type, unique_label, returned_values, schema_definition)
+  def topics(update_type, unique_label, returned_values, schema_definition, extra_columns \\ [])
       when update_type in ~w[inserted updated deleted]a do
     identifier_columns =
       case update_type do
@@ -306,10 +308,11 @@ defmodule EctoWatch.WatcherServer do
           # There isn't a need to broadcast to topics specifically
           # for the primary key because it's not possible to subscribe
           # to IDs which haven't been created yet.
-          schema_definition.association_columns
+          schema_definition.association_columns ++ (extra_columns || [])
 
         _ ->
-          [schema_definition.primary_key | schema_definition.association_columns]
+          [schema_definition.primary_key | schema_definition.association_columns] ++
+            (extra_columns || [])
       end
 
     # |> MapSet.new()
