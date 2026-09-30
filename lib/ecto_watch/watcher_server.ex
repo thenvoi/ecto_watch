@@ -133,7 +133,13 @@ defmodule EctoWatch.WatcherServer do
     end
 
     notifications_pid = Process.whereis(:ecto_watch_postgrex_notifications)
-    {:ok, _notifications_ref} = Postgrex.Notifications.listen(notifications_pid, unique_label)
+
+    # `:eventually`: the LISTEN connection is not connected right now. Postgrex has
+    # registered the listener and issues the LISTEN once it (re)connects.
+    case Postgrex.Notifications.listen(notifications_pid, unique_label) do
+      {:ok, _notifications_ref} -> :ok
+      {:eventually, _notifications_ref} -> :ok
+    end
 
     {:ok,
      %{

@@ -2012,4 +2012,83 @@ defmodule EctoWatchTest do
         )
     end
   end
+
+  describe "LISTEN connection outage" do
+    test "a watcher started during the outage gets notifications after the reconnect", %{
+      already_existing_id1: already_existing_id1
+    } do
+      test_pid = self()
+      listen_outage = start_supervised!({Agent, fn -> false end})
+
+      # EctoWatch starts its LISTEN connection (Postgrex.Notifications) with the
+      # repo's config. The repo's pool is already running, so these options only
+      # reach the LISTEN connection.
+      Application.put_env(:ecto_watch, TestRepo,
+        auto_reconnect: true,
+        parameters: [application_name: "ecto_watch_listen"],
+        # Postgrex calls this before each connect attempt. During the outage it
+        # points the LISTEN connection at a closed port, so reconnects fail while
+        # the pool stays connected.
+        configure: fn opts ->
+          if Agent.get(listen_outage, & &1) do
+            send(test_pid, {:listen_connect, :blocked})
+            Keyword.put(opts, :port, 1)
+          else
+            send(test_pid, {:listen_connect, :allowed})
+            opts
+          end
+        end
+      )
+
+      on_exit(fn -> Application.delete_env(:ecto_watch, TestRepo) end)
+
+      start_supervised!(
+        {EctoWatch,
+         repo: TestRepo,
+         pub_sub: TestPubSub,
+         watchers: [
+           {Thing, :updated}
+         ]}
+      )
+
+      # The initial connect; the next :allowed is the reconnect after the outage
+      assert_received {:listen_connect, :allowed}
+
+      EctoWatch.subscribe({Thing, :updated})
+
+      # Stop the watcher before the outage: the UNLISTEN that Postgrex sends when
+      # a channel loses its last listener fails while it is disconnected
+      watcher_id = :ew_updated_for_ectowatchtest_thing
+      :ok = Supervisor.terminate_child(EctoWatch.WatcherSupervisor, watcher_id)
+
+      # Drop only the LISTEN connection and keep it from reconnecting
+      Agent.update(listen_outage, fn _ -> true end)
+
+      %Postgrex.Result{rows: [[true]]} =
+        Ecto.Adapters.SQL.query!(
+          TestRepo,
+          """
+          SELECT pg_terminate_backend(pid)
+          FROM pg_stat_activity
+          WHERE datname = current_database() AND application_name = 'ecto_watch_listen'
+          """,
+          []
+        )
+
+      assert_receive {:listen_connect, :blocked}, 5_000
+
+      # The watcher creates its trigger through the pool, which is still up, then
+      # asks the disconnected LISTEN connection to listen
+      assert {:ok, _pid} = Supervisor.restart_child(EctoWatch.WatcherSupervisor, watcher_id)
+
+      Agent.update(listen_outage, fn _ -> false end)
+      assert_receive {:listen_connect, :allowed}, 5_000
+      # Returns once the reconnect, and the LISTENs it re-issues, are done
+      :sys.get_state(:ecto_watch_postgrex_notifications)
+
+      Ecto.Adapters.SQL.query!(TestRepo, "UPDATE things SET the_string = 'the new value'", [])
+
+      assert_receive {{Thing, :updated}, %{id: ^already_existing_id1}}
+    end
+  end
 end
